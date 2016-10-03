@@ -1,0 +1,286 @@
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - render-to-texture</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				color: #ffffff;
+				font-family:Monospace;
+				font-size:13px;
+				text-align:center;
+				font-weight: bold;
+				background-color: #000000;
+				margin: 0px;
+				overflow: hidden;
+			}
+
+			#info {
+				position: absolute;
+				top: 0px; width: 100%;
+				padding: 5px;
+			}
+
+			a {
+				color: #ffffff;
+			}
+
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<div id="info"><a href="http://threejs.org" target="_blank">three.js</a> render-to-texture webgl example</div>
+
+		<script src="../three.js/build/three.js"></script>
+
+		<script src="../three.js/build/Detector.js"></script>
+		<script src="../three.js/bulid/stats.min.js"></script>
+
+		<script id="fragment_shader_screen" type="x-shader/x-fragment">
+
+			varying vec2 vUv;
+			uniform sampler2D tDiffuse;
+
+			void main() {
+				gl_FragColor = texture2D( tDiffuse, vUv );
+			}
+
+		</script>
+
+		<script id="fragment_shader_pass_1" type="x-shader/x-fragment">
+
+			varying vec2 vUv;
+			uniform float time;
+			uniform sampler2D tDiffuse;
+			uniform float width;
+			uniform float height;
+			uniform float dA;
+			uniform float dB;
+			uniform float feed;
+			uniform float k;
+			const mat3 SimpleBlur= (1.0/9.0)*mat3( 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 );
+			const mat3 ClearNone= mat3( 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0 );
+			const mat3 Laplace = mat3( 0.05, 0.2, 0.05, 0.2, -1.0, 0.2, 0.05, 0.2, 0.05 );
+
+			void main() {
+				float a = texture2D( tDiffuse, vUv ).r;
+				float b = texture2D( tDiffuse, vUv ).g;
+				float laplaceA = -1.0*a;
+				laplaceA += 1.0;
+
+				mat3 I, R, G;
+	      vec2 sample;
+
+	      for (int i=0; i<3; i++){
+	        for (int j=0; j<3; j++) {
+	          sample = texture2D(tDiffuse, vUv + vec2(i-1,j-1)/vec2(width, height)).rg;
+	          R[i][j] = sample.r; 
+	          G[i][j] = sample.g;
+	        }
+	      }
+
+	      mat3 convolvedMatR = matrixCompMult( Laplace, R );
+	      mat3 convolvedMatG = matrixCompMult( Laplace, G );
+	      float convR = 0.0;
+	      float convG = 0.0;
+	      for (int i=0; i<3; i++){
+	        for (int j=0; j<3; j++) {
+	          convR += convolvedMatR[i][j];
+	          convG += convolvedMatG[i][j];
+	        }
+	      }
+
+	      convR = clamp(a + (dA*convR - (a*b*b) + feed*(1.0-a)), 0.0, 1.0);
+	      // convR = clamp((dA*convR), 0.0, 1.0);
+	      convG = clamp(b + (dB*convG + (a*b*b) - (k+feed)*b), 0.0, 1.0);
+	      // convG = clamp(((a*b*b) - (k+feed)*b), 0.0, 1.0);
+
+				gl_FragColor = vec4(convR, convG, 0.0, 1.0);
+			}
+
+		</script>
+
+		<script id="vertexShader" type="x-shader/x-vertex">
+
+			varying vec2 vUv;
+
+			void main() {
+
+				vUv = uv;
+				gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+
+			}
+
+		</script>
+
+
+		<script>
+
+			if ( ! Detector.webgl ) Detector.addGetWebGLMessage();
+
+			var container, stats;
+
+			var cameraRTT, camera, sceneRTT, sceneScreen, scene, renderer, zmesh1, zmesh2;
+
+			var mouseX = 0, mouseY = 0;
+
+			var windowHalfX = window.innerWidth / 2;
+			var windowHalfY = window.innerHeight / 2;
+
+			var rtTextureA, rtTextureB, material, quad, materialScreen, rtTextureDest;
+			var randomTexture;
+
+			var delta = 0.01;
+
+			init();
+			animate();
+
+			function init() {
+
+				container = document.getElementById( 'container' );
+
+				camera = new THREE.PerspectiveCamera( 30, window.innerWidth / window.innerHeight, 1, 10000 );
+				camera.position.z = 100;
+
+				cameraRTT = new THREE.OrthographicCamera( window.innerWidth / - 2, window.innerWidth / 2, window.innerHeight / 2, window.innerHeight / - 2, -10000, 10000 );
+				cameraRTT.position.z = 100;
+
+				scene = new THREE.Scene();
+				sceneRTT = new THREE.Scene();
+				sceneScreen = new THREE.Scene();
+
+				var light = new THREE.DirectionalLight( 0xffffff );
+				light.position.set( 0, 0, 1 ).normalize();
+				sceneRTT.add( light );
+
+				light = new THREE.DirectionalLight( 0xffaaaa, 1.5 );
+				light.position.set( 0, 0, -1 ).normalize();
+				sceneRTT.add( light );
+
+				rtTextureA = new THREE.WebGLRenderTarget( window.innerWidth, window.innerHeight, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter, format: THREE.RGBFormat } );
+				rtTextureB = new THREE.WebGLRenderTarget( window.innerWidth, window.innerHeight, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter, format: THREE.RGBFormat } );
+
+				var data = new Uint8Array(256 * 256 * 4);
+				for (var i=0; i<256; i++) {
+					for (var j=0; j<256; j++) {
+						var val = (i > 100 && i < 110 && j > 100 && j < 110) * 255;
+						data[(i*256 + j) * 4 + 0] = 255;
+						data[(i*256 + j) * 4 + 1] = val;
+					}
+				}
+				randomTexture = new THREE.DataTexture(data, 256, 256, THREE.RGBAFormat);
+				randomTexture.needsUpdate = true;
+
+				material = new THREE.ShaderMaterial( {
+
+					uniforms: { 
+						time: { value: 0.0 },
+						tDiffuse: { value: rtTextureA.texture },
+						width: { value: 256 },
+						height: { value: 256},
+						k: { value: 0.060 },
+						feed: { value: 0.055 },
+						dB: { value: 0.5 },
+						dA: { value: 1.0 }
+					},
+					vertexShader: document.getElementById( 'vertexShader' ).textContent,
+					fragmentShader: document.getElementById( 'fragment_shader_pass_1' ).textContent
+
+				} );
+
+				materialScreen = new THREE.ShaderMaterial( {
+
+					uniforms: { tDiffuse: { value: randomTexture } },
+					vertexShader: document.getElementById( 'vertexShader' ).textContent,
+					fragmentShader: document.getElementById( 'fragment_shader_screen' ).textContent,
+
+					depthWrite: false
+
+				} );
+
+				var plane = new THREE.PlaneBufferGeometry( window.innerWidth, window.innerHeight );
+
+				quad = new THREE.Mesh( plane, material );
+				quad.position.z = -100;
+				sceneRTT.add( quad );
+
+				materialBasic = new THREE.MeshBasicMaterial( { wireframe: false, map: randomTexture } )
+				quad = new THREE.Mesh( plane, materialScreen );
+				quad.position.z = -100;
+				sceneScreen.add( quad );
+
+				// Render to textureB first
+				rtTextureSrc = rtTextureA;
+				rtTextureDest = rtTextureB;
+				rtTextureSrc.texture = randomTexture;
+
+				renderer = new THREE.WebGLRenderer();
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.autoClear = false;
+
+				container.appendChild( renderer.domElement );
+
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
+
+			}
+
+			function onDocumentMouseMove( event ) {
+
+				mouseX = ( event.clientX - windowHalfX );
+				mouseY = ( event.clientY - windowHalfY );
+
+			}
+
+			//
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				render();
+				stats.update();
+
+			}
+
+			function render() {
+
+				var time = Date.now() * 0.0015;
+
+				camera.position.x += ( mouseX - camera.position.x ) * .05;
+				camera.position.y += ( - mouseY - camera.position.y ) * .05;
+
+				camera.lookAt( scene.position );
+
+				material.uniforms.tDiffuse.value = rtTextureSrc.texture;
+				material.uniforms.width.value = window.innerWidth;
+				material.uniforms.height.value = window.innerHeight;
+				materialScreen.uniforms.tDiffuse.value = rtTextureDest.texture;
+				// materialScreen.uniforms.tDiffuse.value = randomTexture;
+
+				renderer.clear();
+
+				// Render first scene into texture
+
+				renderer.render( sceneRTT, cameraRTT, rtTextureDest, true );
+
+				// Render full screen quad with generated texture
+
+				renderer.render( sceneScreen, cameraRTT );
+
+				// Swap the src and dest textures
+				var tmp = rtTextureDest;
+				rtTextureDest = rtTextureSrc;
+				rtTextureSrc = tmp;
+
+			}
+
+		</script>
+	</body>
+</html>

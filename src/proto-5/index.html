@@ -1,0 +1,65 @@
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - render-to-texture</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				color: #ffffff;
+				font-family:Monospace;
+				font-size:13px;
+				text-align:center;
+				font-weight: bold;
+				background-color: #000000;
+				margin: 0px;
+				overflow: hidden;
+			}
+
+			#info {
+				position: absolute;
+				top: 0px; width: 100%;
+				padding: 5px;
+			}
+
+			a {
+				color: #ffffff;
+			}
+
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<div id="info"><a href="http://threejs.org" target="_blank">three.js</a> render-to-texture webgl example</div>
+
+		<script id="brush-vertex-shader" type="x-shader/x-vertex">
+			precision mediump float;
+			precision mediump int;
+			attribute vec4 color;
+			varying vec3 vPosition;
+			varying vec4 vColor;
+			void main() {
+				vPosition = position;
+				vColor = color;
+				gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+			}
+		</script>
+		<script id="brush-fragment-shader" type="x-shader/x-frag" src="./brushShader.frag">
+			precision mediump float;
+			precision mediump int;
+			varying vec3 vPosition;
+			varying vec4 vColor;
+			void main() {
+				vec4 color = vec4( vColor );
+				gl_FragColor = color;
+			}
+		</script>
+		<script src="../three.js/build/three.js"></script>
+		<script src="../three.js/build/Detector.js"></script>
+		<script src="../three.js/build/stats.min.js"></script>
+		<script src="./rgb_ryb.js"></script>
+		<script src="./proto-5.js"></script>
+	</body>
+</html>
