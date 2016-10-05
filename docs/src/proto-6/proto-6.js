@@ -1,8 +1,8 @@
 if ( ! Detector.webgl ) Detector.addGetWebGLMessage();
 
 const brushThickness = 2;
-const brushSamples = 26;
-const brushTouchdownDistance = 7.0;
+const brushSamples = 14;
+const brushTouchdownDistance = 15.0;
 
 var container, stats;
 var camera, scene, renderer;
@@ -34,9 +34,11 @@ var brushStrokes = [];
 var animations = {};
 
 var params = {
+	addRandomCurve : function() {addRandomCurve(800)},
 	bpm : 60,
-	pulseActive : true,
-	saturation : 1.0,
+	pulseAffectsSaturation : false,
+	pulseMakesStrokes : false,
+	saturation : 1.0
 };
 
 init();
@@ -98,13 +100,16 @@ function startGUI() {
 		height: 32 * paramCount - 1
 	});
 	
+	gui.add(params, 'addRandomCurve').name("Add Random Brush Stroke");
 	gui.add(params, 'bpm').min(30).max(160).name("Heart Rate");
 
-	gui.add(params, 'pulseActive').name("Heart Beat On").onChange( function() {
+	gui.add(params, 'pulseAffectsSaturation').name("Pulse Affects Saturation").onChange( function() {
 		params.saturation = 1.0;
 		if (animations["pulseAnimation"])
 			delete animations["pulseAnimation"];
 	});
+
+	gui.add(params, 'pulseMakesStrokes').name("Pulse Makes Brush Strokes");
 
 	gui.add(params, 'saturation').min(0.0).max(1.0).name("Saturation").onChange( function() {
 		brushStrokes.forEach((brushStroke) => {
@@ -114,23 +119,40 @@ function startGUI() {
 	});
 }
 
+function linscale(x, inmin, inmax, outmin, outmax) {
+	let normo = (x - inmin) / (inmax - inmin);
+	return normo * (outmax-outmin) + outmin;
+}
+
+function makeBrushesOnPulse() {
+	let size = linscale(params.bpm, 30, 160, 900, 200);
+	let paintCount = Math.floor(linscale(params.bpm, 30, 120, 1, 10));
+	for (let i=0; i<paintCount; i++) {
+		addRandomCurve(size);
+	}
+}
+
 function pulse() {
 	window.setTimeout( pulse, 60000 / params.bpm );
 
-	if (!params.pulseActive) return;
+	if (params.pulseAffectsSaturation) {
+		if (animations["pulseAnimation"])
+			delete animations["pulseAnimation"];
 
-	if (animations["pulseAnimation"])
-		delete animations["pulseAnimation"];
+		animations.pulseAnimation = new Animation({
+			duration : Math.min(0.75, 60000 / params.bpm),
+			startVal : 1.0,
+			targetVal : 0.1,
+			onUpdate : function (startVal, targetVal, progress) {
+				params.saturation = startVal + progress * (targetVal - startVal);
+			}
+		});
+		animations.pulseAnimation.start();
+	}
 
-	animations.pulseAnimation = new Animation({
-		duration : Math.min(0.75, 60000 / params.bpm),
-		startVal : 1.0,
-		targetVal : 0.1,
-		onUpdate : function (startVal, targetVal, progress) {
-			params.saturation = startVal + progress * (targetVal - startVal);
-		}
-	});
-	animations.pulseAnimation.start();
+	if (params.pulseMakesStrokes) {
+		makeBrushesOnPulse();
+	}
 }
 
 function updateAnimations() {
@@ -172,20 +194,34 @@ function makeBrush() {
 		let col = lerpColor(color1, color2, Math.random());
 		ryb.setRyb( Math.floor(255 * col.r), Math.floor(255 * col.y), Math.floor(255 * col.b));
 		let brushColor = new THREE.Color( ryb.getRgbText() );
-		// brushColor.setHSL(col.h, col.s, col.l);
 		brushColors.push( brushColor );
 		let brushHeight = Math.random();
 		brushHeights.push(brushHeight);
 	}
+	let brushMin = Math.min.apply(null, brushHeights);
+	let brushMax = Math.max.apply(null, brushHeights);
+	brushHeights = brushHeights.map(x => {
+		return (x-brushMin) / (brushMax - brushMin);
+	});
+}
+
+function windowPointToScenePoint( pt ) {
+	let mx = new THREE.Vector2();
+	mx.x = ( pt.x / window.innerWidth ) * 2 - 1;
+	mx.y = - ( pt.y / window.innerHeight ) * 2 + 1;
+	raycaster.setFromCamera( mx, camera );
+	let intersects = raycaster.intersectObject( quad );
+	if ( intersects.length ) {
+		return intersects[0].point;
+	}
 }
 
 function handleNewMouseEvent( event ) {
-	mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
-	mouse.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
-	raycaster.setFromCamera( mouse, camera );
-	let intersects = raycaster.intersectObject( quad );
-	if ( intersects.length ) {
-		mousePoints.push(intersects[0].point);
+	mouse.x = event.clientX;
+	mouse.y = event.clientY;
+	let pt = windowPointToScenePoint(mouse);
+	if (pt) {
+		mousePoints.push(pt);
 	}
 }
 
@@ -293,39 +329,63 @@ function addColorsToColorBuffer( colorBuffer, bufferOffset, pressure, previousSt
 	}
 }
 
-function onDocumentMouseUp( event ) {
-	handleNewMouseEvent( event );
-	let lineGeometry = new THREE.Geometry();
-	for (let i=0; i<mousePoints.length; i++) {
-		let mEvent = mousePoints[i];
-		lineGeometry.vertices.push(new THREE.Vector3( mEvent.x, mEvent.y, -100));
-	}
-	// let material = new THREE.LineBasicMaterial({
-	// 	color: 0x0000ff
-	// });
-	// let line = new THREE.Line( lineGeometry, material );
-	// scene.add( line );
+function makePointsAlongCurve( p1, p2, p3 ) {
+	let bez = new Bezier( p1, p2, p3 );
+	let lut = bez.getLUT(100);
+	let outPoints = [];
+	lut.forEach(p => {
+		outPoints.push({
+			x : p.x,
+			y : p.y
+		});
+	});
+	return outPoints;
+}
 
-	// Next, go through and try to define a shape that's an outline of the line
+function addRandomCurve( size ) {
+	let points = [];
+	let midpoint = {
+		x : Math.random() * (window.innerWidth - size) + size/2,
+		y : Math.random() * (window.innerHeight - size) + size/2,
+	}
+	for (let i=0; i<3; i++) {
+		points.push({
+			x : midpoint.x + Math.random() * size - size/2,
+			y : midpoint.y + Math.random() * size - size/2
+		});
+	}
+	let curvePoints = makePointsAlongCurve(...points);
+	let lineGeometry = new THREE.Geometry();
+	curvePoints.forEach(p => {
+		let pt = windowPointToScenePoint(p);
+		if (pt)
+			lineGeometry.vertices.push( new THREE.Vector3(pt.x, pt.y, -100) );
+	});
+	addNewBrushStroke( lineGeometry );
+}
+
+function addNewBrushStroke( lineGeometry ) {
+	// Go through and try to define a shape that's an outline of the line
 	let leftLineGeometry = new THREE.Geometry();
 	let rightLineGeometry = new THREE.Geometry();
-	for (let i=0; i<mousePoints.length-2; i++) {
-		let pressure = Math.min(5.0, Math.max(1.0, Math.min(Math.abs(-i/brushTouchdownDistance), Math.abs((mousePoints.length-2-i)/brushTouchdownDistance))));
+	for (let i=0; i<lineGeometry.vertices.length-2; i++) {
+		let pt = lineGeometry.vertices[i];
+		let nextPt = lineGeometry.vertices[i+1];
+		let pressure = Math.min(5.0, Math.max(1.0, Math.min(Math.abs(-i/brushTouchdownDistance), Math.abs((lineGeometry.vertices.length-2-i)/brushTouchdownDistance))));
 		pressure = 1.0 + (pressure - 1.0) / 5;
-		let mEvent = mousePoints[i];
-		let dy = mousePoints[i+1].y - mousePoints[i].y;
-		let dx = mousePoints[i+1].x - mousePoints[i].x;
+		let dy = nextPt.y - pt.y;
+		let dx = nextPt.x - pt.x;
 		let ang = Math.atan2(dy, dx);
 		let perpAngLeft = ang + Math.PI/2;
 		let perpAngRight = ang - Math.PI/2;
 		leftLineGeometry.vertices.push(new THREE.Vector3( 
-			mEvent.x + pressure * brushThickness * Math.cos(perpAngLeft),
-			mEvent.y + pressure * brushThickness * Math.sin(perpAngLeft),
+			pt.x + pressure * brushThickness * Math.cos(perpAngLeft),
+			pt.y + pressure * brushThickness * Math.sin(perpAngLeft),
 			-100)
 		);
 		rightLineGeometry.vertices.push(new THREE.Vector3( 
-			mEvent.x + pressure * brushThickness * Math.cos(perpAngRight),
-			mEvent.y + pressure * brushThickness * Math.sin(perpAngRight),
+			pt.x + pressure * brushThickness * Math.cos(perpAngRight),
+			pt.y + pressure * brushThickness * Math.sin(perpAngRight),
 			-100)
 		);
 	}
@@ -369,6 +429,25 @@ function onDocumentMouseUp( event ) {
 	let brushStroke = new THREE.Mesh( strokeGeometry, brushMaterial );
 	scene.add( brushStroke );
 	brushStrokes.push( brushStroke );
+	if (brushStrokes.length > 100) {
+		scene.remove(brushStrokes[0]);
+		brushStrokes.splice(0, 1);
+	}
+}
+
+function onDocumentMouseUp( event ) {
+	handleNewMouseEvent( event );
+
+	if (mousePoints.length < 4)
+		return;
+
+	let lineGeometry = new THREE.Geometry();
+	for (let i=0; i<mousePoints.length; i++) {
+		let mEvent = mousePoints[i];
+		lineGeometry.vertices.push(new THREE.Vector3( mEvent.x, mEvent.y, -100));
+	}
+
+	addNewBrushStroke( lineGeometry );
 }
 
 function animate() {
