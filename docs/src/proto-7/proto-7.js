@@ -35,7 +35,7 @@ var params = {
 	lightY : 0,
 	lightZ : -5,
 	lightColor : [255, 255, 195],
-	diffuseStrength : 10000,
+	diffuseStrength : 6000,
 	specularStrength : 60,
 	paintColor1 : [0, 0, 0],
 	paintColor2 : [0, 0, 0],
