@@ -1,12 +1,13 @@
 if ( ! Detector.webgl ) Detector.addGetWebGLMessage();
 
 const brushThickness = 3;
-const brushSamples = 18;
+const bristleCount = 18;
 const brushMultisampling = 2;
 const brushTouchdownDistance = 8.0;
+const bristleMinimumDistance = 0.05;
 
 var container, stats;
-var camera, scene, renderer, time = 0;
+var camera, scene, renderer, time = 0, backgroundMaterial;
 var raycaster;
 var quad;
 var heightRenderTarget;
@@ -28,6 +29,7 @@ var animations = {};
 var params = {
 	addRandomCurve : function() {addRandomCurve(800)},
 	bpm : 60,
+	backgroundColor : [255, 238, 221],
 	lightingEnabled : false,
 	lightX : 0,
 	lightY : 0,
@@ -37,6 +39,7 @@ var params = {
 	specularStrength : 60,
 	paintColor1 : [0, 0, 0],
 	paintColor2 : [0, 0, 0],
+	brushColorVariety : 0.5,
 	pulseAffectsSaturation : false,
 	pulseMakesStrokes : false,
 	saturation : 1.0
@@ -62,14 +65,14 @@ function init() {
 	scene.add( light );
 
 	var plane = new THREE.PlaneBufferGeometry( window.innerWidth, window.innerHeight );
-	var material = new THREE.MeshBasicMaterial({
+	backgroundMaterial = new THREE.MeshBasicMaterial({
 		color: 0xffeedd,
 		wireframe: false,
 		transparent: true,
 		opacity: 1.0
 	});
 
-	quad = new THREE.Mesh( plane, material );
+	quad = new THREE.Mesh( plane, backgroundMaterial );
 	quad.position.z = -100;
 	scene.add( quad );
 
@@ -115,12 +118,14 @@ function startGUI() {
 	lf.add(params, 'lightY').min(-100).max(100);
 	lf.add(params, 'lightZ').min(-100).max(0);
 	lf.add(params, 'diffuseStrength').min(50).max(10000);
-	lf.add(params, 'specularStrength').min(20).max(300);
+	lf.add(params, 'specularStrength').min(20).max(10000);
 	lf.addColor(params, 'lightColor');
 
 	var pf = gui.addFolder("Paint");
 	pf.addColor(params, 'paintColor1').listen();
 	pf.addColor(params, 'paintColor2').listen();
+	pf.addColor(params, 'backgroundColor');
+	pf.add(params, 'brushColorVariety').min(0).max(10);
 	pf.open;
 
 	var hf = gui.addFolder("Heart Rate");
@@ -211,15 +216,21 @@ function makeBrush() {
 	brushColors = [];
 	brushHeights = [];
 	noise.seed(Math.random());
-	let ryb = new RgbRyb()
-	for (let i=0; i<brushSamples; ++i) {
-		let col = lerpColor(params.paintColor1, params.paintColor2, Math.random());
+	let dy = Math.random();
+	let ryb = new RgbRyb();
+
+	for (let i=0; i<bristleCount; ++i) {
+		let lfrac = noise.simplex2( i/(bristleCount-1) * params.brushColorVariety, dy);
+		lfrac = (lfrac + 1) / 2;
+		console.log(lfrac);
+		let col = lerpColor(params.paintColor1, params.paintColor2, lfrac);
 		ryb.setRyb( col[0], col[1], col[2] );
 		let brushColor = new THREE.Color( ryb.getRgbText() );
 		brushColors.push( brushColor );
-		let brushHeight = Math.random();
+		let brushHeight = Math.random() * (i===0 || i === (bristleCount - 1) ? 0.6 : 1.0);
 		brushHeights.push(brushHeight);
 	}
+
 	let brushMin = Math.min.apply(null, brushHeights);
 	let brushMax = Math.max.apply(null, brushHeights);
 	brushHeights = brushHeights.map(x => {
@@ -292,10 +303,10 @@ function makeStripFaces( indexStart, indexEnd, indexCount ) {
 
 function colorForVertexAtIndex( idx, verticesPerStrip ) {
 	let brushDist = (idx % verticesPerStrip) / verticesPerStrip;
-	let brushNear = Math.floor(brushDist * brushSamples);
+	let brushNear = Math.floor(brushDist * bristleCount);
 	let brushFar = brushNear + 1;
-	let brushInterp = brushDist * brushSamples - brushNear;
-	if (brushFar >= brushSamples) {
+	let brushInterp = brushDist * bristleCount - brushNear;
+	if (brushFar >= bristleCount) {
 		return new THREE.Color().copy( brushColors[ brushNear ] );
 	} else {
 		return new THREE.Color(
@@ -308,13 +319,13 @@ function colorForVertexAtIndex( idx, verticesPerStrip ) {
 
 function heightForVertexAtIndex( idx, verticesPerStrip ) {
 	let brushDist = (idx % verticesPerStrip) / verticesPerStrip;
-	let brushNear = Math.floor(brushDist * brushSamples);
+	let brushNear = Math.floor(brushDist * bristleCount);
 	let brushFar = brushNear + 1;
-	let brushInterp = brushDist * brushSamples - brushNear;
+	let brushInterp = brushDist * bristleCount - brushNear;
 	let dy = Math.floor( idx / verticesPerStrip );
 
 	let outVal;
-	if (brushFar >= brushSamples) {
+	if (brushFar >= bristleCount) {
 		outVal = brushHeights[ brushNear ];
 	} else {
 		outVal = (1 - brushInterp) * brushHeights[ brushNear ] + brushInterp * brushHeights[ brushFar ];
@@ -356,7 +367,7 @@ function addFacesToVertexBuffer( vertexBuffer, bufferOffset, previousStrip, curr
 		let pd = currentStrip[i+1];
 		let pd_plus = (i < currentStrip.length - 2) ? currentStrip[i+2] : currentStrip[i+1];
 
-		let m = 10
+		let m = 1;
 		let ha = m * heightForVertexAtIndex(vstart - vertexCount, vertexCount);
 		let hb = m * heightForVertexAtIndex(vstart + 1 - vertexCount, vertexCount);
 		let hb_plus = m * heightForVertexAtIndex(vstart + 2 - vertexCount, vertexCount);
@@ -476,10 +487,21 @@ function addColorsToColorBuffer( colorBuffer, bufferOffset, previousPressure, cu
 		let hb = heightForVertexAtIndex(vstart + 1 - vertexCount, vertexCount);
 		let hc = heightForVertexAtIndex(vstart, vertexCount);
 		let hd = heightForVertexAtIndex(vstart + 1, vertexCount);
-		ca.a = Math.min(1.0, Math.max(0.0, (1.0 - Math.max(0.0, (ha - previousPressure)))));
-		cb.a = Math.min(1.0, Math.max(0.0, (1.0 - Math.max(0.0, (hb - previousPressure)))));
-		cc.a = Math.min(1.0, Math.max(0.0, (1.0 - Math.max(0.0, (hc - currentPressure)))));
-		cd.a = Math.min(1.0, Math.max(0.0, (1.0 - Math.max(0.0, (hd - currentPressure)))));
+
+		let colors = [ca, cb, cc, cd];
+		let heights = [ha, hb, hc, hd];
+		let pressures = [previousPressure, previousPressure, currentPressure, currentPressure];
+
+		for (let j=0; j<4; j++) {
+			let distance = heights[j] - pressures[j];
+
+			// If the bristle is too far from the canvas, then it doesn't draw any color at all
+			if (distance > bristleMinimumDistance)
+				colors[j].a = 0;
+			else
+				colors[j].a = (distance > 0 ? (distance / bristleMinimumDistance) : 1);
+		}
+
 		for (let j=0; j<4; j++) {
 			colorBuffer[voffset + (0 * 4) + j] = ca[ colorIndices[j] ];
 			colorBuffer[voffset + (1 * 4) + j] = cb[ colorIndices[j] ];
@@ -582,7 +604,7 @@ function addNewBrushStroke( lineGeometry ) {
 
 	// Now, actually make the ribbon shape
 	makeBrush();
-	let verticesPerStrip =  brushSamples * brushMultisampling;
+	let verticesPerStrip =  bristleCount * brushMultisampling;
 	let inbetweens = verticesPerStrip - 2;
 	let strokeGeometry = new THREE.BufferGeometry();
 	let previousStripVertices = [];
@@ -678,6 +700,9 @@ function render() {
 		mat.uniforms.LightPosition_worldspace.value = LightPosition_worldspace;
 		mat.uniforms.lightColor.value = new THREE.Vector3( params.lightColor[0] / 255, params.lightColor[1] / 255, params.lightColor[2] / 255);
 	});
+
+	let bg = new THREE.Color(params.backgroundColor[0]/255, params.backgroundColor[1]/255, params.backgroundColor[2]/255);
+	backgroundMaterial.color.setHex(bg.getHex());
 
 	camera.lookAt( scene.position );
 	renderer.clear();
